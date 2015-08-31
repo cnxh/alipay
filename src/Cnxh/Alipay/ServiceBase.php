@@ -2,13 +2,34 @@
 
 namespace Cnxh\Alipay;
 
+use DOMDocument;
 use Illuminate\Support\Str;
 
-abstract class ApiBase
+abstract class ServiceBase
 {
+    // 支付宝网关地址（新）
+    protected $alipay_gateway_new = 'https://mapi.alipay.com/gateway.do?';
+
+    // 商户id  2088*********
     protected $partner;
 
+    // key
     protected $key;
+
+    // 默认签名方式为md5
+    protected $sign_type = 'MD5';
+
+    // 默认编码为utf-8
+    protected $input_charset = 'UTF-8';
+
+    // 访问模式,根据自己的服务器是否支持ssl访问，若支持请选择https；若不支持请选择http
+    protected $transport = 'https';
+
+    // 私钥路径地址 签名方式为RSA时设置
+    protected $private_key_path;
+
+    // 公钥路径地址 签名方式为RSA时设置
+    protected $ali_public_key_path;
 
     // ca证书路径地址，用于curl中ssl校验
     protected $cacert = __DIR__.'/../../../../cacert.pem';
@@ -33,6 +54,41 @@ abstract class ApiBase
     public function setKey($key)
     {
         $this->key = $key;
+
+        return $this;
+    }
+
+    public function setSignType($sign_type)
+    {
+        $this->sign_type = $sign_type;
+
+        return $this;
+    }
+
+    public function setInputCharset($input_charset)
+    {
+        $this->input_charset = $input_charset;
+
+        return $this;
+    }
+
+    public function setTransport($transport)
+    {
+        $this->transport = $transport;
+
+        return $this;
+    }
+
+    public function setPrivateKeyPath($private_key_path)
+    {
+        $this->private_key_path = $private_key_path;
+
+        return $this;
+    }
+
+    public function setAliPublicKeyPath($ali_public_key_path)
+    {
+        $this->ali_public_key_path = $ali_public_key_path;
 
         return $this;
     }
@@ -66,6 +122,7 @@ abstract class ApiBase
 
         return $arg;
     }
+
     /**
      * 把数组所有元素，按照“参数=参数值”的模式用“&”字符拼接成字符串，并对字符串做urlencode编码.
      *
@@ -88,6 +145,7 @@ abstract class ApiBase
 
         return $arg;
     }
+
     /**
      * 除去数组中的空值和签名参数.
      *
@@ -107,6 +165,7 @@ abstract class ApiBase
 
         return $para_filter;
     }
+
     /**
      * 对数组排序.
      *
@@ -120,6 +179,7 @@ abstract class ApiBase
 
         return $para;
     }
+
     /**
      * 写日志，方便测试（看网站需求，也可以改成把记录存入数据库）
      * 注意：服务器需要开通fopen配置.
@@ -218,6 +278,7 @@ abstract class ApiBase
 
         return $output;
     }
+
     /**
      * 实现多种字符解码方式.
      *
@@ -339,5 +400,204 @@ abstract class ApiBase
         } else {
             return false;
         }
+    }
+
+    /**
+     * 获取返回时的签名验证结果.
+     *
+     * @param $para_temp 通知返回来的参数数组
+     * @param $sign 返回的签名结果
+     *
+     * @return 签名验证结果
+     */
+    public function getSignVeryfy($para_temp, $sign)
+    {
+        //除去待签名参数数组中的空值和签名参数
+        $para_filter = $this->paraFilter($para_temp);
+
+        //对待签名参数数组排序
+        $para_sort = $this->argSort($para_filter);
+
+        //把数组所有元素，按照“参数=参数值”的模式用“&”字符拼接成字符串
+        $prestr = $this->createLinkstring($para_sort);
+
+        $is_sgin = false;
+        switch (strtoupper(trim($this->sign_type))) {
+            case 'RSA' :
+                $is_sgin = $this->rsaVerify($prestr, trim($this->ali_public_key_path), $sign);
+                break;
+            case 'MD5':
+                $is_sgin = $this->md5Verify($prestr, $sign, $this->key);
+                break;
+            default :
+                $is_sgin = false;
+        }
+
+        return $is_sgin;
+    }
+
+    /**
+     * 生成签名结果.
+     *
+     * @param $para_sort 已排序要签名的数组
+     * return 签名结果字符串
+     */
+    protected function buildRequestMysign($para_sort)
+    {
+        //把数组所有元素，按照“参数=参数值”的模式用“&”字符拼接成字符串
+        $prestr = $this->createLinkstring($para_sort);
+
+        $mysign = '';
+        switch (strtoupper(trim($this->sign_type))) {
+            case 'RSA' :
+                $mysign = $this->rsaSign($prestr, $this->private_key_path);
+                break;
+            case 'MD5':
+                $mysign = $this->md5Sign($prestr, $this->key);
+                break;
+            default :
+                $mysign = '';
+        }
+
+        return $mysign;
+    }
+
+    /**
+     * 生成要请求给支付宝的参数数组.
+     *
+     *
+     * @return 要请求的参数数组
+     */
+    protected function buildRequestPara()
+    {
+
+        //除去待签名参数数组中的空值和签名参数
+        $para_filter = $this->paraFilter($this->getParameter());
+
+        //对待签名参数数组排序
+        $para_sort = $this->argSort($para_filter);
+
+        //生成签名结果
+        $mysign = $this->buildRequestMysign($para_sort);
+
+        //签名结果与签名方式加入请求提交参数组中
+        $para_sort['sign'] = $mysign;
+        $para_sort['sign_type'] = strtoupper(trim($this->sign_type));
+
+        return $para_sort;
+    }
+
+    /**
+     * 生成要请求给支付宝的参数数组.
+     *
+     *
+     * @return 要请求的参数数组字符串
+     */
+    protected function buildRequestParaToString()
+    {
+        //待请求参数数组
+        $para = $this->buildRequestPara();
+
+        //把参数组中所有元素，按照“参数=参数值”的模式用“&”字符拼接成字符串，并对字符串做urlencode编码
+        $request_data = $this->createLinkstringUrlencode($para);
+
+        return $request_data;
+    }
+
+    /**
+     * 建立请求，以表单HTML形式构造（默认）.
+     *
+     * @param $para_temp 请求参数数组
+     * @param $method 提交方式。两个值可选：post、get
+     * @param $button_name 确认按钮显示文字
+     *
+     * @return 提交表单HTML文本
+     */
+    public function buildRequestForm($method, $button_name)
+    {
+        //待请求参数数组
+        $para = $this->buildRequestPara();
+
+        $sHtml = "<form id='alipaysubmit' name='alipaysubmit' action='".$this->alipay_gateway_new."' method='".$method."'>";
+        while (list($key, $val) = each($para)) {
+            $sHtml .= "<input type='hidden' name='".$key."' value='".$val."'/>";
+        }
+
+        //submit按钮控件请不要含有name属性
+        $sHtml = $sHtml."<input type='submit' value='".$button_name."'></form>";
+
+        $sHtml = $sHtml."<script>document.forms['alipaysubmit'].submit();</script>";
+
+        return $sHtml;
+    }
+
+    /**
+     * 建立请求，以模拟远程HTTP的POST请求方式构造并获取支付宝的处理结果.
+     *
+     *
+     * @return 支付宝处理结果
+     */
+    public function buildRequestHttp()
+    {
+        $sResult = '';
+
+        //待请求参数数组字符串
+        $request_data = $this->buildRequestPara($this->getParameter());
+
+        //远程获取数据
+        $sResult = $this->getHttpResponsePOST($this->alipay_gateway_new, $this->cacert, $request_data, trim(strtolower($this->input_charset)), true);
+
+        return $sResult;
+    }
+
+    /**
+     * 建立请求，以模拟远程HTTP的POST请求方式构造并获取支付宝的处理结果，带文件上传功能.
+     *
+     * @param $para_temp 请求参数数组
+     * @param $file_para_name 文件类型的参数名
+     * @param $file_name 文件完整绝对路径
+     *
+     * @return 支付宝返回处理结果
+     */
+    public function buildRequestHttpInFile($file_para_name, $file_name)
+    {
+
+        //待请求参数数组
+        $para = $this->buildRequestPara($this->param);
+        $para[$file_para_name] = '@'.$file_name;
+
+        //远程获取数据
+        $sResult = $this->getHttpResponsePOST($this->alipay_gateway_new, $this->cacert, $para, '', true);
+
+        return $sResult;
+    }
+
+    /**
+     * 用于防钓鱼，调用接口query_timestamp来获取时间戳的处理函数
+     * 注意：该功能PHP5环境及以上支持，因此必须服务器、本地电脑中装有支持DOMDocument、SSL的PHP配置环境。建议本地调试时使用PHP开发软件
+     * return 时间戳字符串.
+     */
+    public function queryTimestamp()
+    {
+        $url = $this->alipay_gateway_new.'service=query_timestamp&partner='.trim(strtolower($this->partner)).'&_input_charset='.trim(strtolower($this->input_charset));
+        $encrypt_key = '';
+
+        $doc = new DOMDocument();
+        $doc->load($url);
+        $itemEncrypt_key = $doc->getElementsByTagName('encrypt_key');
+        $encrypt_key = $itemEncrypt_key->item(0)->nodeValue;
+
+        return $encrypt_key;
+    }
+
+    public function parseXml($xml)
+    {
+        $dom = new DOMDocument();
+        $dom->loadXML($xml);
+        if ($dom->getElementsByTagName('is_success')->item(0)->nodeValue != 'T') {
+            throw new AlipayException($dom->getElementsByTagName('error')->item(0)->nodeValue);
+        }
+
+        return $dom;
     }
 }

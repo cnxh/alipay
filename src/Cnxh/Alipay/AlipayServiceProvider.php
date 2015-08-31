@@ -22,10 +22,15 @@ class AlipayServiceProvider extends ServiceProvider
     {
         $config = config('alipay');
 
-        if (!empty($config['apis'])) {
-            foreach ($config['apis'] as $api) {
-                $api_config = array_merge($config['common'], $config[$api]);
-                $class = __NAMESPACE__.'\\'.Str::studly(str_replace('.', '_', $api)).'\Api';
+        if (!empty($config['services'])) {
+            foreach ($config['services'] as $api) {
+                $api_config = array_merge($config['common'], isset($config[$api]) ? $config[$api] : []);
+                $class = __NAMESPACE__.'\\'.Str::studly(str_replace('.', '_', $api)).'\Service';
+
+                if (!class_exists($class)) {
+                    throw new AlipayException("class $class not found");
+                }
+
                 $this->app->singleton($api, function ($app) use ($api_config, $class) {
                     return new $class($api_config);
                 });
@@ -35,6 +40,6 @@ class AlipayServiceProvider extends ServiceProvider
 
     public function providers()
     {
-        return (array) config('alipay.apis');
+        return (array) config('alipay.services');
     }
 }
