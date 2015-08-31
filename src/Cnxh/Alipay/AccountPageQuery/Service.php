@@ -3,9 +3,12 @@
 namespace Cnxh\Alipay\AccountPageQuery;
 
 use Cnxh\Alipay\ServiceBase;
+use Cnxh\Alipay\Traits\NotifyReturnTrait;
 
 class Service extends ServiceBase
 {
+    use NotifyReturnTrait;
+
     // 接口名称
     protected $service = 'account.page.query';
 
